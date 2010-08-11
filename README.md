@@ -1,7 +1,6 @@
 # d.o adso
 
-adso is a modular password archive based upon [PySkein][1]. The immediate goal
-is to be able to have code like this:
+adso is a modular JSON encryptor and password archive based upon [PySkein][1]. The immediate goal of adso is to be able to have code like this:
 
     >>> import adso
     >>> p = adso.pwfile('/home/drostie/.passwords')
@@ -19,12 +18,6 @@ is to be able to have code like this:
     >>> p.save()
     Password file successfully saved.
 
-It was named after a monk in *The Name of the Rose*, Adso of Melk. In principle,
-the underlying classes in adso should be able to serialize arbitrary Python 
-dictionaries, via JSON, into an encrypted file. For the immediate future I will
-probably just use Skein as a stream cipher, but the possibility of using the
-Threefish block cipher in a tweak-counter chaining mode (64-bit nonce + 64-bit
-counter as tweak input) should not be discounted. It might be possible to get
-a nice GUI interface acting atop the underlying python program.
+It was named after a monk in *The Name of the Rose*, Adso of Melk. In principle, the underlying classes in adso should be able to serialize arbitrary Python dictionaries, via JSON, into an encrypted file. For the immediate future I will probably just use Skein as a stream cipher, but the possibility of using the Threefish block cipher in a tweak-counter chaining mode (64-bit nonce + 64-bit counter as tweak input) should not be discounted. It might be possible to get a nice GUI interface acting atop the underlying python program.
 
-[1] http://packages.python.org/pyskein/
+[1]: http://packages.python.org/pyskein/
