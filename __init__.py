@@ -1,14 +1,31 @@
 # -*- coding: utf-8 -*-
+
+# This file is a part of adso, which uses PySkein, which is licensed under the 
+# GPL. As far as I can understand, this means that this code must also be 
+# released under the GPL. Since I don't believe in the value of copyright, I 
+# would like apologize to later users for that fact. Nonetheless: 
+# 
+#     Copyright 2010 Chris Drost
+#     
+#     adso is free software: it can be redistributed and modified under the 
+#     terms of the GNU General Public License, version 3, as published by the 
+#     Free Software Foundation. adso is distributed WITHOUT ANY WARRANTIES; 
+#     this includes the implied warranties of MERCHANTABILITY and FITNESS FOR A 
+#     PARTICULAR PURPOSE. See the license for more details. You should have 
+#     received a copy of the license text along with adso, in a text document 
+#     named 'COPYING'. If you have not, visit http://www.gnu.org/licenses/ .
+
 from os import urandom
+from adso import ciphers
+from random import randint
 import skein
 import time
+import re
 from array import array
 from datetime import datetime
 import base64
 from getpass import getpass
 import json
-
-__supported_ciphers = [ "skein512/-" ]
 
 ## Version identifiers :: gen.syn.vers
 # Just to get out my present thinking and why there are three of them:
@@ -17,70 +34,43 @@ __supported_ciphers = [ "skein512/-" ]
 # The syntax number `syn` indicates that the syntax has changed, but past versions
 # are still supported within that generation. The version number `vers` indicates
 # any further change in the API or codebase. 
-__version__ = "0.0.0"
+__version__ = "1.0.0"
 
-# general purpose format conversion methods.
-def _converter(switch_dict):
-	def output(o):
-		t = type(o).__name__
-		return switch_dict[t](o) if t in switch_dict else switch_dict['default'](o)
-	return output
+_bytes    = lambda x: x.encode('utf-8') if type(x) == str else x
+_to_b64   = lambda x: base64.b64encode(_bytes(x)).decode('utf-8')
+_from_b64 = lambda x: base64.b64decode(_bytes(x))
 
-_bytes = _converter({
-	'default': lambda t: array('B', t),
-	'dict':    lambda t: array('B', json.dumps(t).encode('utf-8')),
-	'str':     lambda t: array('B', t.encode('utf-8'))
-})
-_to_b64 = _converter({
-	'bytes':   lambda t: base64.b64encode(t).decode('utf-8'),
-	'str':     lambda t: base64.b64encode(t.encode('utf-8')).decode('utf-8'),
-	'default': lambda t: base64.b64encode(array('B', t).tostring()).decode('utf-8')
-})
-_from_b64 = _converter({
-	'str':     lambda t: base64.b64decode(t.encode('utf-8')),
-	'default': lambda t: base64.b64decode(t)
-})
-
-def _shash(length, msg, nonce, purpose):
-	"Produces a salted hash with the given nonce and purpose."
-	s = skein.skein512(
-		digest_bits = length,
-		nonce = nonce.encode('utf-8'),
-		pers = b'20100812 spam@drostie.org adso/' + purpose.encode('utf-8')
-	)
-	s.update(msg)
+def _hash(message, length, pers, **kwargs):
+	for key in kwargs:
+		kwargs[key] = _bytes(kwargs[key])
+	pers = b'20100914 spam@drostie.org adso/' + pers.encode('utf-8')
+	s = skein.skein512(digest_bits=length, pers=pers, **kwargs)
+	s.update(_bytes(message))
 	return s.digest()
 
-def encrypt(cipher, key, iv, data):
-	if cipher == 'skein512/-':
-		bytes = _bytes(data)
-		stream = _bytes(skein.skein512(
-			digest_bits = 8 * len(bytes),
-			mac = key.encode('utf-8'),
-			nonce = iv.encode('utf-8')
-		).digest())
-		for i in range(0, len(bytes)):
-			stream[i] ^= bytes[i]
-		return stream.tostring()
-	else:
-		raise ValueError('Cipher "%s" not supported by this adso instance.')
-
-
-def decrypt(cipher, key, iv, bytes):
-	if cipher == 'skein512/-':
-		# stream ciphers are their own inverses.
-		return encrypt(cipher, key, iv, bytes)
-	else:
-		raise ValueError('Cipher "%s" not supported by this adso instance.')
+def _mac(message, key, nonce):
+	return _to_b64(_hash(message, 512, 'mac', mac=key, nonce=nonce))
 
 __prng_state = urandom(64)
 def randstring(bits):
 	"Produces a random base64-encoded string with the adso PRNG."
 	global __prng_state
-	t = "atime:" + str(time.clock()) + ",systime:" + str(time.time())
-	h = _shash(512 + bits, __prng_state, t, 'rand')	
+	nonce = "atime:" + str(time.clock()) + ",systime:" + str(time.time())
+	h = _hash(__prng_state, 512 + bits, 'randstring', nonce=nonce)
 	__prng_state = h[0:64]
 	return _to_b64(h[64:])
+
+def encrypt(cipher, key, iv, data):
+	if cipher in ciphers.supported:
+		return ciphers.encryptors[cipher](key, iv, data)
+	else:
+		raise ValueError('Cipher "%s" not supported by this adso instance.' % cipher)
+
+def decrypt(cipher, key, iv, data):
+	if cipher in ciphers.supported:
+		return ciphers.decryptors[cipher](key, iv, data)
+	else:
+		raise ValueError('Cipher "%s" not supported by this adso instance.' % cipher)
 
 class adsoSyntaxError(ValueError):
 	def __init__(self, message, data):
@@ -89,87 +79,124 @@ class adsoSyntaxError(ValueError):
 	def __str__(self):
 		return repr(self.message)
 
+class PasswordIncorrect(ValueError):
+	def __init__(self):
+		self.message = "Incorrect password specified."
+	def __str__(self):
+		return repr(self.message)
+
+class PasswordUnavailable(ValueError):
+	def __init__(self):
+		self.message = "No password was available to do the encryption/decryption."
+	def __str__(self):
+		return repr(self.message)
+
 class adso:
-	def __init__(self, data={}, cipher="skein512/-", password=None, prompts=True, description=None):
+	def __init__(self, data={}, cipher=ciphers.supported[0], password=None, prompts=True, description="<No description provided.>"):
 		self.prompts = prompts
 		self.password = password
 		self.cipher = cipher
 		self.data = data
 		self.description = description
 	
+	def __repr__(self):
+		return '<adso.adso(%s, cipher="%s", prompts=%s)>' % \
+			(json.dumps(self.description), self.cipher, str(self.prompts))
+	
+	@classmethod
+	def fromfile(c, filename, **kwargs):
+		#We let any IOErrors propagate to the end user.
+		with open(filename, "r") as f:
+			return adso.fromstring(f.read(), **kwargs)
+	
+	@classmethod
+	def fromstring(c, source, **kwargs):
+		try:
+			data = json.loads(source)
+		except ValueError:
+			raise adsoSyntaxError('Not a JSON string', source)
+		return adso.fromdict(data, **kwargs)
+	
 	@classmethod
 	def fromdict(c, source, prompts=True, password=None):
 		# we do a bunch of quick checks to make sure that the data is ok
 		if 'adso' not in source:
 			raise adsoSyntaxError('Not an adso object', source)
-		doc = source['adso']
-		if 'version' not in doc:
+		
+		data = source['adso']
+		
+		if 'version' not in data:
 			raise adsoSyntaxError('No version identifier', source)
 		
 		version_split = lambda s: map(int, s.split("."))
-		refgen = version_split(__version)
+		refgen = version_split(__version__).__next__()
 		try:
-			(gen, syn, vers) = version_split(doc['version'])
+			(gen, syn, vers) = version_split(data['version'])
 		except ValueError:
 			raise adsoSyntaxError('Invalid version identifier', source)
 		if gen != refgen:
-			raise adsoSyntaxError('Expected version %s.x.y, instead saw %s' % (refgen, source['version']), source)
+			raise adsoSyntaxError('Expected version %s.x.y, instead saw %s' % (refgen, data['version']), source)
 		
 		# Parse rules for this generation of syntax. At this point we assume
 		# that the syntax is correct and allow the user to debug whatever invalid
-		# syntax errors exist by hand.
+		# syntax errors exist by hand. This tool should never produce them.
 		if password == None:
 			if prompts: 
 				password = getpass('Please provide the password for this adso object: ')
 			else:
-				raise ValueError('No password available to decrypt with.')
+				raise PasswordUnavailable()
+		
 		if syn == 0:
-			obj = decrypt(
-				doc['cipher'], password, 
-				doc['nonce'], _from_b64(doc['crypt'])
+			obj = decrypt(data['cipher'], password, data['nonce'], _from_b64(data['crypt']))
+			mac = _mac(obj, password, data['nonce'])
+			if mac != data['mac']:
+				print(obj); print(mac); print(data['mac'])
+				raise PasswordIncorrect()
+			obj = json.loads(obj.decode('utf-8'))['data']
+			return adso(
+				data = obj, cipher = data['cipher'], password = password, 
+				prompts = prompts, description = source['description'], 
 			)
-			try:
-				obj = json.loads(obj.decode('utf-8'))
-			except ValueError:
-				raise ValueError("Incorrect password.")
-			return adso(obj, doc['cipher'], password, prompts, source['description'])
+		
 		else:
 			raise adsoSyntaxError('Unexpected syntax version: %s.%s' % (gen, syn))
 	
-	def serialize(self):
-		if self.password == None:
-			if self.prompts: 
-				password = getpass('Please provide the password for this adso object: ')
-			else:
-				raise ValueError('No password available to serialize with.')
-		else:
+	def to_file(self, filename):
+		with open(filename, 'w') as f:
+			f.write(self.to_str())
+	
+	# I have made the string representation fundamental because I want the JSON 
+	# strings generated by adso to have a certain human-intuitive order which 
+	# dictionaries don't need to provide. This is also why there are numbers in
+	# the adso keys. The dict representation is just a JSON parse of this.
+	def to_str(self):
+		if self.password != None:
 			password = self.password
+		elif self.prompts: 
+			password = getpass('Please provide the password for this adso object: ')
+		else:
+			raise PasswordUnavailable()
 		self.password = password
-		nonce = randstring(240)
-		return json.dumps({
-			"description": self.description,
-			"last modified": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S.%fZ"),
-			"adso": {
-				"version": __version__,
-				"cipher": self.cipher,
-				"nonce": nonce,
-				"crypt": _to_b64(encrypt(self.cipher, password, nonce, json.dumps(self.data)))
+		
+		nonce = randstring(256)
+		# include a padding string to disguise length changes in the document.
+		pad = "".join(map(lambda x: str(x % 10), range(0, randint(0, 500))))
+		core = json.dumps({'pad': pad, 'data': self.data})
+		
+		#The numbers are just to preserve the sort order; they get removed.
+		basis = json.dumps({
+			"1description": self.description,
+			"2last modified": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S.%fZ"),
+			"3adso": {
+				"1version": __version__,
+				"2cipher": self.cipher,
+				"3nonce": nonce,
+				"4mac": _mac(core, password, nonce),
+				"5crypt": _to_b64(encrypt(self.cipher, password, nonce, core))
 			}
-		}, indent=4);
-
-# Speculation on future file formats:
-# {
-#     "description": "<<insert arbitrary descriptive data here>>",
-#     "last modified": "2010-08-10 00:42:25.658",
-#     "adso": {
-#         "cipher": "skein512/stream",
-#         "version": "0.1",
-#         "nonce": "YcYlaxnfPsepRJn686zhENWsiSUvBabqQe/fo6Uo",
-#         "salt": "KvUPILdNan5ox7+O/9pv",
-#         "verifier": "NpT87UA4P2C3W2WbbbY/In9Xw0c5NLY075xTpVkS/U4="
-#         "crypt": encrypt({
-#             "padding": "YcYlaxnfPsepRJn686zhENWsiSUvBabqQe/fo6UoYcYlaxnfPsepRJn686zhENWsiSUvBabqQe/fo6UoYcYlaxnfPsepRJn686zhENWsiSUvBabqQe/fo6Uo",
-#             "data": {}
-#         })
-#     }
-# }
+		}, sort_keys=True, indent=4)
+		
+		return re.sub(r'(\n {4,8}")\d', r'\1', basis)
+	
+	def to_dict(self):
+		return json.loads(self.to_str())
