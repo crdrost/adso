@@ -23,6 +23,23 @@ supported = []
 encryptors = {}
 decryptors = {}
 
+def encrypt(cipher, key, iv, data):
+	"Encrypts a string of data according to the cipher."
+	if cipher in supported:
+		return encryptors[cipher](key, iv, data)
+	else:
+		raise ValueError('Cipher "%s" is not supported by this adso instance.' \
+			% cipher)
+
+def decrypt(cipher, key, iv, data):
+	"Decrypts a string of data according to the cipher."
+	if cipher in supported:
+		return decryptors[cipher](key, iv, data)
+	else:
+		raise ValueError('Cipher "%s" is not supported by this adso instance.' \
+			% cipher)
+
+
 # Cipher names in 'supported' should contain a namespace and a cipher specification.
 # They should 
 
